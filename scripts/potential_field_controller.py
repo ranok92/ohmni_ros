@@ -2,7 +2,7 @@ import numpy as np
 import pdb
 import sys
 import math
-
+from time import time
 
 #from featureExtractor.drone_feature_extractor import angle_between, total_angle_between, norm_2d, dot_2d, project
 
@@ -21,8 +21,10 @@ def angle_between(v1, v2):
 
 def total_angle_between(v1, v2):
     """
-    Calculate total angle between v1 and v2. Resulting angle is in range [-pi, pi].
-
+    Calculate total angle between v1 and v2. Starting from v1 and moving anti 
+    clockwise from v1 to v2.
+    Resulting angle is in range [-pi, pi].
+    
     :param v1: first vector.
     :type v1: np.array
     :param v2: second vector.
@@ -90,6 +92,8 @@ def rad_to_deg(val):
     '''
     return val*180/np.pi
 
+
+
 '''
 def angle_between(v1, v2):
     """ Returns the angle in radians between vectors 'v1' and 'v2'::
@@ -109,6 +113,92 @@ def angle_between(v1, v2):
     v2_u = unit_vector(v2)
     return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 '''
+
+def calculate_risk(agent, obstacle, 
+                   collison_thresh=0.4,
+                   ):
+    '''
+    Given an agent and an obstacle, calculates the risk of 
+    collision of the obstacle to that of the agent
+    Input
+    :param agent   : dict containg agent state
+                     {"position", "orientation", "speed", "id"}
+    :param obstacle: dict containing obstacle state
+    :param threshold_distance: distance from the agent to gauge 
+                               risk posed
+    Output
+    :param risk: integer indicating the level of risk
+                0 - No risk 
+                1 - Medium risk
+                2 - High risk 
+    '''
+
+    rel_pos = obstacle["position"] - agent["position"]
+    obs_vel = obstacle["orientation"] * obstacle["speed"]
+    agent_vel = agent["orientation"] * agent["speed"]
+
+    rel_vel = agent_vel - obs_vel
+
+    dist_between = norm_2d(rel_pos)
+    
+    ang = angle_between(rel_vel, rel_pos)
+
+    min_dist_project = dist_between * math.sin(ang)
+    #low risk by default
+    print("Min dist ", min_dist_project)
+    print("ang :", ang)
+    risk = 0
+    if ang < np.pi /2:
+        if min_dist_project < collison_thresh:
+            #high risk
+            risk = 2
+
+        else:
+            #med risk
+            risk = 1
+
+    return risk
+
+
+class PIDController(object):
+    '''
+    PID controller class 
+    '''
+    def __init__(self, Kp, Ki, Kd, current_val=0):
+
+        self.Kp = Kp
+        self.Ki = Ki
+        self.Kd = Kd
+
+        self._error_integral = 0
+        self._error_derivative = 0
+        
+        self._last_error = 0
+        self._last_time = time()
+        self.current_value = current_val #starting from 0
+
+
+    def __call__(self, set_point, dt=None):
+        '''
+        The control to be applied given the error and the 
+        PID parameters
+        '''
+        now = time()
+        dt = now - self._last_time
+
+        error = set_point - self.current_value
+        prop_val = self.Kp * error 
+
+        self._error_integral += error * dt 
+        self._error_derivative = (error - self._last_error) / dt
+        integ_val = self._error_integral * self.Kp
+        deriv_val = self._error_derivative * self.Kd
+
+        control_val = prop_val + integ_val + deriv_val
+
+        self.current_value += control_val 
+        
+        return self.current_value
 
 
 class PotentialFieldController(object):
@@ -165,13 +255,13 @@ class PotentialFieldController(object):
         goal_vector = goal_state
 
         if agent_state['orientation'] is None:
-            agent_state['orientation'] = np.array([0, 0])
+            agent_state['orientation'] = np.array([1, 0])
 
         if np.linalg.norm(global_coord - goal_vector) < self.goal_threshold:
 
-            return 0
+            return np.array([0, 0])
 
-        attr_force = self.KP*(global_coord - goal_vector) - self.KV*agent_state['orientation']
+        attr_force = self.KP*(global_coord - goal_vector) - self.KV*agent_state['velocity']
         if self.normalize_force:
 
             mag = np.hypot(attr_force[0] , attr_force[1])/self.attr_force_lim
@@ -193,8 +283,8 @@ class PotentialFieldController(object):
         rho = np.hypot(obs[0], obs[1])+self.eps
         #print ('rho', rho)
         if rho <= self.rep_force_dist_limit:
-            force_vector_x = self.ETA*(1.0/rho - 1/self.rep_force_dist_limit)*(1/rho)*(-obs[0])
-            force_vector_y = self.ETA*(1.0/rho - 1/self.rep_force_dist_limit)*(1/rho)*(-obs[1])
+            force_vector_x = self.ETA*(1.0/rho - 1/self.rep_force_dist_limit)*(1/rho)*(1/rho)*(-obs[0])
+            force_vector_y = self.ETA*(1.0/rho - 1/self.rep_force_dist_limit)*(1/rho)*(1/rho)*(-obs[1])
             force_mag = np.hypot(force_vector_x , force_vector_y)/self.rep_force_lim
 
             #print("Force in x :{}, Force in y :{}".format(force_vector_x, force_vector_y))
@@ -369,23 +459,23 @@ class PFControllerContWorld(PotentialFieldController):
             force : 2 dim vector
             state : state dictionary of the environment
         '''
-        cur_orientation = state['agent_state']['orientation']
+        #cur_orientation = state['agent_state']['orientation']
+        cur_orientation = np.array([1, 0])
         cur_speed = state['agent_state']['speed']
 
         theta = total_angle_between(cur_orientation, force)
         new_speed = project(cur_orientation, force)
 
 
-        print("Current orientation :", cur_orientation)
-        print("Force direction :", force)
+        #print("Current orientation :", cur_orientation)
+        #print("Force direction :", force)
 
         norm_speed = min(self.max_speed, new_speed)
-        print("New speed :", norm_speed)
+        #print("New speed :", norm_speed)
 
         #pdb.set_trace()
         norm_theta = theta/np.pi
         return np.asarray([norm_speed, norm_theta])
-
 
 
     def eval_action(self, state):
@@ -400,23 +490,40 @@ class PFControllerContWorld(PotentialFieldController):
         #calculate force due to goal
         
         f_goal = self.calculate_attractive_force_btwpoints(agent_state, goal_state)
-        total_force += f_goal
+        #total_force += f_goal
         rep_force = np.array([0.0, 0.0])
+        affected_obs = 0
         for obs in obstacle_state_list:
-
-
+        
             rf = self.calculate_repulsive_force_btwpoints(obs)
-            #print("For obstacle position :{}, Force: {}".format(obs["position"], rf))
             rep_force += rf
+            if np.linalg.norm(rf) > 0:
+                #print("For obstacle position :{}, Force: {}".format(obs["position"], rf))
+                affected_obs += 1
 
         if norm_2d(rep_force) > self.rep_force_lim:
             rep_force_norm = (rep_force/norm_2d(rep_force))*self.rep_force_lim
         else:
             rep_force_norm = rep_force
 
-        total_force += rep_force_norm
+        #the f_goal is calculated on global coordinates
+        #the repulsive force (rep_force_norm) is calculated 
+        #in local coordinates.
+        #convert f_goal in local coordinates as the final 
+        #command provided to the bot is in local coordinates
+
+        agent_orientation = agent_state["orientation"]
+        diff_angle = total_angle_between(agent_orientation, np.array([1, 0]))
+        rot_matrix = get_rot_matrix(diff_angle)
+
+        f_goal_adjusted = np.matmul(rot_matrix, f_goal)
+
+
+        total_force = f_goal_adjusted + rep_force_norm
         action_array = self.select_action_from_force(total_force, state)
         #print("Attractive force :", f_goal)
+        #print("Attractive force adjusted :", f_goal_adjusted)
+
         #print("Repulsive force :", rep_force_norm)
         #print("total force :", total_force)
 
@@ -427,4 +534,4 @@ class PFControllerContWorld(PotentialFieldController):
             rel_action = true_action
         #pdb.set_trace()
         '''
-        return action_array, f_goal
+        return action_array, total_force
